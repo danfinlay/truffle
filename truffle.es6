@@ -7,6 +7,7 @@ var fs = require("fs");
 var gaze = require('gaze');
 var deasync = require("deasync");
 var colors = require('colors/safe');
+var ethersim = require("ethersim");
 var Init = require("./lib/init");
 var Create = require("./lib/create");
 var Config = require("./lib/config");
@@ -110,6 +111,73 @@ registerTask('watch', "Watch filesystem for changes and rebuild the project auto
   };
 
   setInterval(check_rebuild, 500);
+});
+
+registerTask('mock-watch', "Runs EtherSim mock server while watching & rebuilding.", function(done) {
+  var config = Config.gather(truffle_dir, working_dir, argv);
+
+  ethersim.startServer(config.rpc.port);
+  var simProvider = ethersim.web3Provider();
+  var simManager = ethersim.Manager;
+
+  var needs_rebuild = true;
+  var needs_redeploy = false;
+
+  gaze(["app/**/*", "config/**/*", "contracts/**/*"], {cwd: working_dir, interval: 1000, debounceDelay: 500}, function() {
+    // On changed/added/deleted
+    this.on('all', function(event, filePath) {
+      var display_path = path.join("./", filePath.replace(working_dir, ""));
+      console.log(colors.cyan(`>> File ${display_path} changed.`));
+      console.log(colors.yellow('>> Resetting blockchain state...'));
+
+      simManager.evm_revert(0, function (err) {
+        if (err) printFailure();
+        simManager.initialize(function (err) {
+          if (err) printFailure();
+
+          console.log(colors.yellow('>> Blockchain state reset.'));
+          needs_rebuild = true;
+
+          if (display_path.indexOf("contracts/") == 0) {
+            needs_redeploy = true;
+          } else {
+            needs_rebuild = true;
+          }
+        });
+      });
+    });
+  });
+
+  var check_rebuild = function() {
+    if (needs_redeploy == true) {
+      needs_redeploy = false;
+      needs_rebuild = false;
+      console.log("Redeploying...");
+      if (runTask("deploy") != 0) {
+        printFailure();
+      }
+    }
+
+    if (needs_rebuild == true) {
+      needs_rebuild = false;
+      console.log("Rebuilding...");
+      if (runTask("build") != 0) {
+        printFailure();
+      }
+    }
+
+    setTimeout(check_rebuild, 500);
+  };
+
+  setInterval(check_rebuild, 500);
+});
+
+registerTask('develop', "Serve app on http://localhost:8080 against mock blockchain and rebuild changes as needed", function(done) {
+  var config = Config.gather(truffle_dir, working_dir, argv, "development");
+  console.log("Using environment " + config.environment + ".");
+  Serve.start(config, function() {
+    runTask("mock-watch");
+  });
 });
 
 registerTask('list', "List all available tasks", function(done) {
@@ -328,8 +396,6 @@ registerTask('serve', "Serve app on http://localhost:8080 and rebuild changes as
     runTask("watch");
   });
 });
-
-
 
 // registerTask('watch:tests', "Watch filesystem for changes and rerun tests automatically", function(done) {
 //
